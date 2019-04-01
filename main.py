@@ -35,31 +35,62 @@ def get_context(all_lines, all_vals, idx):
         j -= 1
     return backward_context, forward_context
 
+def ms_academic_search_query(query):
+    import httplib, urllib, base64
+    import json
+
+    SUBSCRIPTION_KEY = os.environ['SUBSCRIPTION_KEY']
+    headers = {
+        # Request headers
+        'Ocp-Apim-Subscription-Key': SUBSCRIPTION_KEY,
+    }
+
+    # Title, year, date, author names, author affiliations, sources.
+    params = urllib.urlencode({
+        # Request parameters
+        'expr': query,
+        'model': 'latest',
+        'count': '10',
+        'offset': '0',
+        # 'orderby': '{string}',
+        'attributes': 'Ti,Y,D,AA.AuN,AA.AfN,E.S',
+    })
+
+    try:
+        conn = httplib.HTTPSConnection('api.labs.cognitive.microsoft.com')
+        conn.request("GET", "/academic/v1.0/evaluate?%s" % params, "{body}", headers)
+        response = conn.getresponse()
+        data = response.read()
+        conn.close()
+        return json.loads(data)
+    except Exception as e:
+        print("[Errno {0}] {1}".format(e.errno, e.strerror))
+
+
 if __name__ == '__main__':
-    search_term = sys.argv[1]
-    output_dir = sys.argv[2]
+    mode = sys.argv[1]
+    search_term = sys.argv[2]
+    output_dir = sys.argv[3]
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
-    ScholarConf.COOKIE_JAR_FILE = output_dir + '/cookies.txt'
-    if True:
-        lead_title = 'Faster R-CNN: Towards Real-Time Object Detection with Region Proposal Networks'
-    elif not os.path.exists(output_dir + '/search.pkl'):
-        # (1) Find the paper that's the top search term.
-        search_query = SearchScholarQuery()
-        search_query.set_phrase(search_term)
-        search_querier = ScholarQuerier()
-        search_querier.send_query(search_query)
-        # (2) Go look at its citations.
-        for x in search_querier.articles:
-            print(x.attrs['title'][0])
-        url = search_querier.articles[0].attrs['url_citations'][0]
-        lead_title = search_querier.articles[0].attrs['title'][0]
-        query = UrlScholarQuery(url=url)
-        querier = ScholarQuerier()
-        querier.send_query(query)
-        querier.save_cookies()
-        # Download articles.
-        if False:
+    if mode == 'scholar':
+        ScholarConf.COOKIE_JAR_FILE = output_dir + '/cookies.txt'
+        if not os.path.exists(output_dir + '/search.pkl'):
+            # (1) Find the paper that's the top search term.
+            search_query = SearchScholarQuery()
+            search_query.set_phrase(search_term)
+            search_querier = ScholarQuerier()
+            search_querier.send_query(search_query)
+            # (2) Go look at its citations.
+            for x in search_querier.articles:
+                print(x.attrs['title'][0])
+            url = search_querier.articles[0].attrs['url_citations'][0]
+            lead_title = search_querier.articles[0].attrs['title'][0]
+            query = UrlScholarQuery(url=url)
+            querier = ScholarQuerier()
+            querier.send_query(query)
+            querier.save_cookies()
+            # Download articles.
             for article in querier.articles:
                 pdf_url = article.attrs['url_pdf'][0]
                 file_name = pdf_url.split('/')[-1]
@@ -68,16 +99,36 @@ if __name__ == '__main__':
                 response = requests.get(pdf_url)
                 with open(output_dir + '/' + file_name, 'wb') as f:
                     f.write(response.content)
-        # Save query results in pickle file.
-        with open(output_dir + '/search.pkl', 'wb') as f:
-            savedict = dict(url=url, lead_title=lead_title,
-                            query=query, search_query=search_query,
-                            querier=querier, search_querier=search_querier)
-    else:
-        with open(output_dir + '/search.pkl', 'rb') as f:
-            pkl = pickle.load(f)
-            url, lead_title = pkl['url'], pkl['lead_title']
-            search_querier, querier = pkl['search_querier'], pkl['querier']
+            # Save query results in pickle file.
+            with open(output_dir + '/search.pkl', 'wb') as f:
+                savedict = dict(url=url, lead_title=lead_title,
+                                query=query, search_query=search_query,
+                                querier=querier, search_querier=search_querier)
+        else:
+            with open(output_dir + '/search.pkl', 'rb') as f:
+                pkl = pickle.load(f)
+                url, lead_title = pkl['url'], pkl['lead_title']
+                search_querier, querier = pkl['search_querier'], pkl['querier']
+    elif mode == 'ms_as':
+        sanitized_title = search_term.lower().replace(':', '').replace('-', ' ')
+        title_query = "Ti='%s'" % sanitized_title
+        title_json = ms_academic_search_query(title_query)
+        title_id = title_json['entities'][0]['PK']
+        ref_query = "RId=%d" % title_id
+        ref_json = ms_academic_search_query(ref_query)
+        lead_title = search_term
+        # Download pdfs.
+        for article_json in ref_json['entities']:
+            print(article_json['Ti'])
+            pdf_url = article_json['S'][0]['U']
+            file_name = pdf_url.split('/')[-1]
+            if file_name[-4:] != '.pdf':
+                file_name += '.pdf'
+            pdf_path = output_dir + '/' + file_name
+            if not os.path.exists(pdf_path):
+                response = requests.get(pdf_url)
+                with open(pdf_path, 'wb') as f:
+                    f.write(response.content)
     # Process.
     for file_name in sorted(glob.glob(output_dir + '/*.pdf')):
         print(file_name)
